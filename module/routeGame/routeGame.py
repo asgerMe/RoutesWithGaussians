@@ -66,6 +66,3 @@ class RouteProblem:
     @property
     def distance_matrix(self):
         return self.__distance_matrix
-
-gameInstance = RouteProblem(2, 10)
-gameInstance.viz()
