@@ -2,13 +2,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 class routeGame:
-    def __init__(self, depots, nodes, seed=1):
-        np.random.seed(0)
+    def __init__(self, depots, nodes, seed=1, geo=''):
+        np.random.seed(seed)
         if type(depots) != int:
             raise ValueError('Depots must be int')
         if type(nodes) != int:
             raise ValueError('Nodes must be int')
 
+        self.__geo=geo
         self.__depots = depots
         self.__deliveries = nodes
 
@@ -23,13 +24,20 @@ class routeGame:
         indices = {}
         for i in range(depots + nodes):
             if i < depots:
-                indices[i] = 'depot'
+                indices[i] = {'type': 'depot'}
             else:
-                indices[i] = 'delivery'
+                indices[i] = {'type': 'delivery'}
         return indices
 
     def __coords(self, depots, nodes):
-        return np.random.random([depots+nodes, 2])
+        if self.__geo == 'circle':
+            coo = []
+            for i in range(depots + nodes):
+               coo.append([  np.random.rand() + np.cos(i*2.0*np.pi/(depots + nodes)),    np.random.rand() +np.sin(i*2.0*np.pi/(depots + nodes))])
+            return np.asarray(coo)
+        else:
+            coo = np.random.random([depots+nodes, 2])
+            return coo
 
     def __cal_distance_matrix(self, coords):
         distance_matrix = np.zeros([len(coords), len(coords)])
@@ -39,7 +47,6 @@ class routeGame:
         return distance_matrix
 
     def __travel_time(self, i, j, coords, indices=False):
-        distance = 0
 
         if i < len(coords) and j < len(coords):
             start_x = coords[i, 0]
@@ -58,6 +65,7 @@ class routeGame:
         colors = np.random.rand(len( self.__coordinates))
         plt.scatter(self.__coordinates[:, 0], self.__coordinates[:, 1], s=15, c=colors, alpha=0.5)
         plt.show()
+
     @property
     def depots(self):
         return self.__depots
@@ -75,8 +83,13 @@ class routeGame:
         return self.__coordinates
 
     @property
-    def distance_matrix(self):
+    def cost_matrix(self):
         return self.__distance_matrix
+
+    @property
+    def time_matrix(self):
+        return self.__distance_matrix*3
+
     @property
     def type(self):
-        return 'TSP'
+        return 'TSPTW'
