@@ -1,4 +1,4 @@
-from module.routeGame import routeGame as game
+from module.RouteGame import routeGame as game
 import numpy as np
 import matplotlib.pyplot as plt
 import itertools
@@ -14,7 +14,7 @@ class Sample:
 
         #Non essential - Ditch on implementation
         self.coordinates = ASSIGNMENT.coordinates
-        self.a = 0.05
+        self.a = 0.4
         self.ASSIGNMENT = {}
 
     def __reshape_matrix(self):
@@ -46,6 +46,9 @@ class Sample:
                     self.depots += 1
                 if v['type'] == 'delivery':
                     self.nodes += 1
+
+            self.depot_list = list(range(self.depots))
+            self.node_list = list(range(self.nodes + 1))
 
         except AttributeError:
            raise AttributeError('The Assignment index should be specified. A dictionary with depot, or node label for each entry ')
@@ -82,21 +85,23 @@ class Sample:
             except AttributeError:
                 raise AttributeError('The cost_matrix should be specified.')
 
-    def __call__(self, ce_samples=100, batch=15, quantile=0.1):
+    def __call__(self, ce_samples=100, batch=15, c1_0=10, theta=0.05):
         y = 9999999
         self.ASSIGNMENT = {'message': 'NO ASSIGNMENT FOUND', 'acc_energy': y}
         depot = 0
-        count_max = 0
-        for sample in range(ce_samples):
-            ASSIGNMENT, COST = self.__get_route_batch(batch)
-            SORT_COST_IDX = np.argsort(COST)
-            ROUTE_MAX = []
-            COST_MAX = []
 
-            for i in SORT_COST_IDX:
-                if COST[i] < y:
-                    ROUTE_MAX.append(ASSIGNMENT[i])
-                    COST_MAX.append(COST[i])
+        for sample in range(ce_samples):
+            t = sample/ce_samples
+            c1 = 1 + (c1_0 - 1)*(1 - t)
+
+            quantile = c1 / len(self.node_list)
+            ASSIGNMENT, COST = self.__get_route_batch(batch)
+            ROUTE_MAX, COST_MAX = self.__sort_routes(ASSIGNMENT, COST, y)
+
+            if len(COST_MAX) > 1:
+                theta_ = (COST_MAX[1] - COST_MAX[0]) / COST_MAX[0]
+                if theta_ < theta:
+                    quantile *= 1.5
 
             quantile_val = np.quantile(COST, quantile)
             if quantile_val < y:
@@ -105,42 +110,35 @@ class Sample:
             OVERALL_SCORE = np.sum(COST)
             if OVERALL_SCORE > 0:
                 self.transition_matrix *= (1-self.a)
-
                 for idx_assign, assignment in enumerate(ROUTE_MAX):
 
                     if COST_MAX[0] < self.ASSIGNMENT['acc_energy']:
                         self.ASSIGNMENT = ROUTE_MAX[0]
                         print(self.ASSIGNMENT['acc_energy'], depot)
-                    else:
-                        count_max += 1
-
-                    if count_max > 10:
-                        depot += 1
-                        if depot >= self.depots:
-                            depot = 0
 
                     for idx, node_0 in enumerate(assignment[depot]['nodes']):
                         if idx > len(assignment[depot]['nodes'])-2:
                             break
-                        assignment[depot]['nodes'] = self.__local_search(assignment[depot]['nodes'], idx, size=3)
+
+                        if np.random.rand() > 0.9:
+                            assignment[depot]['nodes'] = self.__local_search(assignment[depot]['nodes'], idx, size=4)
+
                         node_1 = assignment[depot]['nodes'][idx + 1]
-                        self.transition_matrix[depot, node_0, node_1] *= (1 - self.a)
-                        self.transition_matrix[depot, node_0, node_1] += self.a*assignment[depot]['trans_energy'][node_0]/(assignment[depot]['energy'])
+                        self.transition_matrix[:, node_0, node_1] += self.a*1.0/len(ROUTE_MAX)
 
         return 'finished'
 
-    def __delete_stop_gain(self, route, idx):
-        route = route[1:]
-        gain = 0
-        if idx > 0:
-            prev = route[idx-1]
-            gain += self.cost_matrix[prev, idx]
-        if idx != len(route)-1:
-            next = route[idx+1]
-            gain += self.cost_matrix[idx, next]
+    def __sort_routes(self, assignment, cost, y):
+        sort_cost_idx = np.argsort(cost)
+        route_max = []
+        cost_max = []
 
-        return gain
+        for i in sort_cost_idx:
+            if cost[i] < y:
+                route_max.append(assignment[i])
+                cost_max.append(cost[i])
 
+        return route_max, cost_max
 
     def __local_search(self, x, point_idx, size=5):
         size += 2
@@ -150,7 +148,6 @@ class Sample:
 
         partial_route = x[start:end]
         permutes = list(itertools.permutations(partial_route[1:-1]))
-
         score_list = []
         ops = 0
         for perm in permutes:
@@ -162,7 +159,11 @@ class Sample:
                 ops += 1
                 if idx < len(proposal_partial_route)-1:
                     score += self.cost_matrix[proposal_partial_route[idx], proposal_partial_route[idx+1]]
+
             score_list.append(score)
+            if len(score_list) > 1:
+                if score_list[-1] < score_list[0]:
+                    break
 
         idx_min = np.argmin(score_list)
         best_perm = np.asarray(permutes[idx_min])
@@ -174,22 +175,24 @@ class Sample:
 
     def __get_route(self):
         ROUTE_ASSIGNMENT = {}
+        ROUTE_ASSIGNMENT['acc_energy_depot'] = [0]*self.depots
         ROUTE_ASSIGNMENT['acc_energy'] = 0
 
         tm = np.copy(self.transition_matrix)
-        indexes = list(range(self.nodes + 1))
 
-        for i in range(self.depots):
-            ROUTE_ASSIGNMENT[i] = {'nodes': [0], 'energy': [0], 'trans_energy': list([0]*(1+self.nodes))}
+        for i in self.depot_list:
+            ROUTE_ASSIGNMENT[i] = {'nodes': [0], 'energy': [0], 'trans_energy': list([0]*len(self.node_list))}
+
         # ITERATE OVER PATH NODES
-        for step in range(1+self.nodes):
+        for step, node_nr in enumerate(self.node_list):
             transition_node_list = {}
             tm_temp = np.copy(tm)
-            # Iterate over depots and expand routes by 1
-            for d in range(self.depots):
 
+            # Iterate over depots and expand routes by 1
+            for d in self.depot_list:
                 # Get current node for this depot
                 current_node = ROUTE_ASSIGNMENT[d]['nodes'][-1]
+
                 if current_node <= 0 and step > 0:
                     continue
 
@@ -199,7 +202,8 @@ class Sample:
                 # Get transition probs and terminate if no path is available
                 trans_probs = tm[d, current_node, :]
                 forbidden_nodes = []
-                for de in range(self.depots):
+
+                for de in self.depot_list:
                     forbidden_nodes.append(ROUTE_ASSIGNMENT[de]['nodes'][-1])
 
                 trans_probs[forbidden_nodes] = 0
@@ -211,12 +215,11 @@ class Sample:
                     proposal_transitions_cost = 0
                 else:
                     probs = trans_probs / norm_probs
-                    transition_node = np.random.choice(indexes, size=1, p=probs)[0]
+                    transition_node = np.random.choice(self.node_list, size=1, p=probs)[0]
 
                     # Get score for this transition
                     proposal_transitions_prob = tm[d, current_node, transition_node]
-                    proposal_transitions_cost = self.cost_matrix[current_node, transition_node] + 0.1*np.exp(0.1*len(ROUTE_ASSIGNMENT[d]['nodes']))
-
+                    proposal_transitions_cost = self.cost_matrix[current_node, transition_node] + 0.1*np.exp(0.5*len(ROUTE_ASSIGNMENT[d]['nodes']))
 
                 # look for paths going to the same node
                 if not transition_node in transition_node_list:
@@ -240,28 +243,27 @@ class Sample:
                 choose_idx = np.random.choice(list(range(len(energies))), size=1, p=energies / np.sum(energies))[0]
                 ROUTE_ASSIGNMENT[choose_idx]['nodes'].append(transition_node_list[t1][choose_idx][2])
                 ROUTE_ASSIGNMENT[choose_idx]['energy'] += transition_node_list[t1][choose_idx][4]
-                ROUTE_ASSIGNMENT['acc_energy'] += transition_node_list[t1][choose_idx][4]
+                ROUTE_ASSIGNMENT['acc_energy_depot'][transition_node_list[t1][0][0]] += transition_node_list[t1][choose_idx][4]
                 ROUTE_ASSIGNMENT[choose_idx]['trans_energy'][transition_node_list[t1][0][1]] = transition_node_list[t1][choose_idx][4]
 
             # If no controversies, pick the only one available
             else:
                 ROUTE_ASSIGNMENT[transition_node_list[t1][0][0]]['nodes'].append(transition_node_list[t1][0][2])
                 ROUTE_ASSIGNMENT[transition_node_list[t1][0][0]]['energy'] += transition_node_list[t1][0][4]
-                ROUTE_ASSIGNMENT['acc_energy'] += transition_node_list[t1][0][4]
+                ROUTE_ASSIGNMENT['acc_energy_depot'][transition_node_list[t1][0][0]] += transition_node_list[t1][0][4]
                 ROUTE_ASSIGNMENT[transition_node_list[t1][0][0]]['trans_energy'][transition_node_list[t1][0][1]] = transition_node_list[t1][0][4]
 
+        ROUTE_ASSIGNMENT['acc_energy'] = np.sum(ROUTE_ASSIGNMENT['acc_energy_depot'])
         return ROUTE_ASSIGNMENT
 
-    def __get_route_batch(self, batch=1, depot=False):
+    def __get_route_batch(self, batch=1):
         route_batch = []
         acc_batch = []
 
         for _ in range(batch):
-            if depot == False:
-                ROUTE_ASSIGNMENT = self.__get_route()
-                route_batch.append(ROUTE_ASSIGNMENT)
-                acc_batch.append(ROUTE_ASSIGNMENT['acc_energy'])
-
+            ROUTE_ASSIGNMENT = self.__get_route()
+            route_batch.append(ROUTE_ASSIGNMENT)
+            acc_batch.append(ROUTE_ASSIGNMENT['acc_energy'])
 
         return route_batch, acc_batch
 
@@ -272,7 +274,7 @@ class Sample:
         if distance_weights:
             for i in range(np.shape(distance_matrix)[0]):
                 for j in range(np.shape(distance_matrix)[1]):
-                    transition_matrix[i, j] = np.exp(-10*distance_matrix[i, j])
+                    transition_matrix[i, j] = np.exp(-distance_matrix[i, j])
 
             transition_matrix -= np.eye(np.shape(transition_matrix)[0])
             for i in range(np.shape(distance_matrix)[0]):
@@ -281,8 +283,8 @@ class Sample:
         return transition_matrix
 
     def display_route(self):
-
         del self.ASSIGNMENT['acc_energy']
+        del self.ASSIGNMENT['acc_energy_depot']
         for idx, val in self.ASSIGNMENT.items():
             depot_idx = -val['nodes'][-1]
 
@@ -297,13 +299,13 @@ class Sample:
             plt.scatter(coords[0], coords[1], s=40, alpha=0.85)
 
             for i in range(len(coords[0])):
-                plt.text(coords[0][i], coords[1][i], '(' + str(i) + ',' + str(val['nodes'][i]) + ', ' + str(coords[1][i]) + ')')
+                plt.text(coords[0][i], coords[1][i], '(' + str(i) + ',' + str(val['nodes'][i]) + ')')
         #print(self.transition_matrix)
         plt.show()
 
-game = game.routeGame(2, 50, seed=200, geo='circle')
+game = game.routeGame(1, 20, seed=200, geo='circle')
 ps = Sample(game)
-ps(batch=20, ce_samples=320)
+ps(batch=70, ce_samples=10)
 ps.display_route()
 
 
